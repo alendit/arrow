@@ -391,7 +391,7 @@ class MemoryMappedFile::MemoryMap : public ResizableBuffer {
     return Status::OK();
   }
 
-  // Same is reserve, shrink_to_fit is always treated as true
+  // Same as reserve, shrink_to_fit is always treated as true
   Status Resize(const int64_t new_size, bool shrink_to_fit = true) override {
     static_cast<void>(shrink_to_fit);
     return Reserve(new_size);
@@ -426,8 +426,7 @@ class MemoryMappedFile::MemoryMap : public ResizableBuffer {
   std::mutex& resize_lock() { return resize_lock_; }
 
  private:
-  // Resize the mmap and file to the specified capacity.
-  // Keeps 64 alignment. Sets the capacity.
+  // Resize the mmap and file to the specified size.
   Status ResizeMap(int64_t new_size) {
     if (file_->mode() != FileMode::type::READWRITE &&
         file_->mode() != FileMode::type::WRITE) {
@@ -466,7 +465,7 @@ class MemoryMappedFile::MemoryMap : public ResizableBuffer {
     return Status::OK();
   }
 
-  // Initialize the mmap and set capacity, size and the data pointers
+  // Initialize the mmap and set size, capacity and the data pointers
   Status InitMMap(int64_t initial_size, bool resize_file = false) {
     if (resize_file) {
       RETURN_NOT_OK(internal::FileTruncate(file_->fd(), initial_size));
@@ -533,19 +532,6 @@ Status MemoryMappedFile::Close() {
   return Status::OK();
 }
 
-Status MemoryMappedFile::ReadAt(int64_t position, int64_t nbytes, int64_t* bytes_read,
-                                void* out) {
-  std::unique_lock<std::mutex> write_guard(memory_map_->lock(), std::defer_lock);
-  std::unique_lock<std::mutex> resize_guard(memory_map_->resize_lock(), std::defer_lock);
-  std::lock(write_guard, resize_guard);
-  nbytes = std::max<int64_t>(0, std::min(nbytes, memory_map_->size() - position));
-  if (nbytes > 0) {
-    std::memcpy(out, memory_map_->data() + position, static_cast<size_t>(nbytes));
-  }
-  *bytes_read = nbytes;
-  return Status::OK();
-}
-
 Status MemoryMappedFile::ReadAt(int64_t position, int64_t nbytes,
                                 std::shared_ptr<Buffer>* out) {
   // we acquire the lock before creating any slices in case a resize is
@@ -559,6 +545,20 @@ Status MemoryMappedFile::ReadAt(int64_t position, int64_t nbytes,
   } else {
     *out = std::make_shared<Buffer>(nullptr, 0);
   }
+  return Status::OK();
+}
+
+Status MemoryMappedFile::ReadAt(int64_t position, int64_t nbytes, int64_t* bytes_read,
+                                void* out) {
+  // unlike in previous, we acquire the write lock too
+  std::unique_lock<std::mutex> write_guard(memory_map_->lock(), std::defer_lock);
+  std::unique_lock<std::mutex> resize_guard(memory_map_->resize_lock(), std::defer_lock);
+  std::lock(write_guard, resize_guard);
+  nbytes = std::max<int64_t>(0, std::min(nbytes, memory_map_->size() - position));
+  if (nbytes > 0) {
+    std::memcpy(out, memory_map_->data() + position, static_cast<size_t>(nbytes));
+  }
+  *bytes_read = nbytes;
   return Status::OK();
 }
 
