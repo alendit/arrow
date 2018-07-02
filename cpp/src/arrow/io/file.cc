@@ -345,9 +345,7 @@ int FileOutputStream::file_descriptor() const { return impl_->fd(); }
 
 // ----------------------------------------------------------------------
 // Implement MemoryMappedFile as a buffer subclass
-// The capacity corresponds to the real mmap size and the
-// file size on disk.
-
+// The class doesn't differentiate between size and capacity
 class MemoryMappedFile::MemoryMap : public ResizableBuffer {
  public:
   MemoryMap() : ResizableBuffer(nullptr, 0) {}
@@ -393,30 +391,13 @@ class MemoryMappedFile::MemoryMap : public ResizableBuffer {
     return Status::OK();
   }
 
-  // Sets the size to the specified value. If the current position
-  // is further than the new size, sets the position to the last byte.
-  Status Resize(const int64_t new_size, bool shrink_to_fit = false) override {
-    if (!shrink_to_fit || (new_size > capacity_)) {
-      RETURN_NOT_OK(Reserve(new_size));
-    } else {
-      // shrink
-      RETURN_NOT_OK(ResizeMap(new_size));
-    }
-    size_ = new_size;
-    if (position_ >= size_) {
-      // if the old position is past the new file's end
-      // set it to the last byte
-      position_ = size_;
-    }
-    return Status::OK();
+  // Same is reserve, shrink_to_fit is always treated as true
+  Status Resize(const int64_t new_size, bool shrink_to_fit = true) override {
+    static_cast<void>(shrink_to_fit);
+    return Reserve(new_size);
   }
 
-  Status Reserve(const int64_t requested_capacity) override {
-    if (!mutable_data_ || requested_capacity > capacity_) {
-      RETURN_NOT_OK(ResizeMap(requested_capacity));
-    }
-    return Status::OK();
-  }
+  Status Reserve(const int64_t new_size) override { return ResizeMap(new_size); }
 
   int64_t size() const { return size_; }
 
@@ -442,16 +423,18 @@ class MemoryMappedFile::MemoryMap : public ResizableBuffer {
 
   std::mutex& lock() { return file_->lock(); }
 
+  std::mutex& resize_lock() { return resize_lock_; }
+
  private:
   // Resize the mmap and file to the specified capacity.
   // Keeps 64 alignment. Sets the capacity.
-  Status ResizeMap(int64_t requested_capacity) {
+  Status ResizeMap(int64_t new_size) {
     if (file_->mode() != FileMode::type::READWRITE &&
         file_->mode() != FileMode::type::WRITE) {
       return Status::IOError("Cannot resize a readonly memory map");
     }
 
-    if (requested_capacity == 0) {
+    if (new_size == 0) {
       if (mutable_data_ != nullptr) {
         // just unmap the mmap and truncate the file to 0 size
         if (munmap(mutable_data_, capacity_) != 0) {
@@ -461,40 +444,43 @@ class MemoryMappedFile::MemoryMap : public ResizableBuffer {
         data_ = mutable_data_ = nullptr;
         size_ = capacity_ = 0;
       }
+      position_ = 0;
       return Status::OK();
     }
 
-    int64_t new_capacity = BitUtil::RoundUpToMultipleOf64(requested_capacity);
     if (mutable_data_) {
       void* result;
-      RETURN_NOT_OK(internal::MemoryMapRemap(mutable_data_, capacity_, new_capacity,
-                                             file_->fd(), &result));
-      capacity_ = new_capacity;
+      RETURN_NOT_OK(
+          internal::MemoryMapRemap(mutable_data_, size_, new_size, file_->fd(), &result));
+      size_ = capacity_ = new_size;
       data_ = mutable_data_ = static_cast<uint8_t*>(result);
+      if (position_ > size_) {
+        position_ = size_;
+      }
     } else {
+      DCHECK_EQ(position_, 0);
       // the mmap is not yet initialized, resize the underlying
       // file, since might have been 0-sized
-      RETURN_NOT_OK(InitMMap(new_capacity, /*resize_file*/ true));
+      RETURN_NOT_OK(InitMMap(new_size, /*resize_file*/ true));
     }
     return Status::OK();
   }
 
   // Initialize the mmap and set capacity, size and the data pointers
-  Status InitMMap(int64_t initial_capacity, bool resize_file = false) {
-    DCHECK(data_ == nullptr && mutable_data_ == nullptr);
-
+  Status InitMMap(int64_t initial_size, bool resize_file = false) {
     if (resize_file) {
-      RETURN_NOT_OK(internal::FileTruncate(file_->fd(), initial_capacity));
+      internal::FileTruncate(file_->fd(), initial_size);
     }
-    void* result = mmap(nullptr, static_cast<size_t>(initial_capacity), prot_flags_,
+    DCHECK(data_ == nullptr && mutable_data_ == nullptr);
+    void* result = mmap(nullptr, static_cast<size_t>(initial_size), prot_flags_,
                         map_mode_, file_->fd(), 0);
     if (result == MAP_FAILED) {
       std::stringstream ss;
       ss << "Memory mapping file failed: " << std::strerror(errno);
       return Status::IOError(ss.str());
     }
-    size_ = capacity_ = initial_capacity;
-    data_ = mutable_data_ = reinterpret_cast<uint8_t*>(result);
+    size_ = capacity_ = initial_size;
+    data_ = mutable_data_ = static_cast<uint8_t*>(result);
 
     return Status::OK();
   }
@@ -502,6 +488,7 @@ class MemoryMappedFile::MemoryMap : public ResizableBuffer {
   int prot_flags_;
   int map_mode_;
   int64_t position_;
+  std::mutex resize_lock_;
 };
 
 MemoryMappedFile::MemoryMappedFile() {}
@@ -548,7 +535,10 @@ Status MemoryMappedFile::Close() {
 
 Status MemoryMappedFile::ReadAt(int64_t position, int64_t nbytes, int64_t* bytes_read,
                                 void* out) {
-  nbytes = std::max<int64_t>(0, std::min(nbytes, memory_map_->capacity() - position));
+  std::unique_lock<std::mutex> write_guard(memory_map_->lock(), std::defer_lock);
+  std::unique_lock<std::mutex> resize_guard(memory_map_->resize_lock(), std::defer_lock);
+  std::lock(write_guard, resize_guard);
+  nbytes = std::max<int64_t>(0, std::min(nbytes, memory_map_->size() - position));
   if (nbytes > 0) {
     std::memcpy(out, memory_map_->data() + position, static_cast<size_t>(nbytes));
   }
@@ -558,7 +548,11 @@ Status MemoryMappedFile::ReadAt(int64_t position, int64_t nbytes, int64_t* bytes
 
 Status MemoryMappedFile::ReadAt(int64_t position, int64_t nbytes,
                                 std::shared_ptr<Buffer>* out) {
-  nbytes = std::max<int64_t>(0, std::min(nbytes, memory_map_->capacity() - position));
+  // we acquire the lock before creating any slices in case a resize is
+  // triggered concurrently, otherwise we wouldn't detect a change in the
+  // use count
+  std::lock_guard<std::mutex> guard_resize(memory_map_->resize_lock());
+  nbytes = std::max<int64_t>(0, std::min(nbytes, memory_map_->size() - position));
 
   if (nbytes > 0) {
     *out = SliceBuffer(memory_map_, position, nbytes);
@@ -599,24 +593,26 @@ Status MemoryMappedFile::Write(const void* data, int64_t nbytes) {
   if (!memory_map_->opened() || !memory_map_->writable()) {
     return Status::IOError("Unable to write");
   }
+  if (nbytes + memory_map_->position() > memory_map_->size()) {
+    return Status::Invalid("Cannot write past end of memory map");
+  }
   return WriteInternal(data, nbytes);
 }
 
-Status MemoryMappedFile::Resize(int64_t new_size) {
-  if (new_size >= memory_map_->capacity()) {
-    return memory_map_->Reserve(new_size);
-  } else {
-    return memory_map_->Resize(new_size, /*shrink_to_fit*/ true);
-  }
-}
-
 Status MemoryMappedFile::WriteInternal(const void* data, int64_t nbytes) {
-  if (nbytes + memory_map_->position() > memory_map_->size()) {
-    int64_t new_size = BitUtil::NextPower2(nbytes + memory_map_->position());
-    RETURN_NOT_OK(memory_map_->Resize(new_size));
-  }
   memcpy(memory_map_->head(), data, static_cast<size_t>(nbytes));
   memory_map_->advance(nbytes);
+  return Status::OK();
+}
+
+Status MemoryMappedFile::Resize(int64_t new_size) {
+  std::unique_lock<std::mutex> write_guard(memory_map_->lock(), std::defer_lock);
+  std::unique_lock<std::mutex> resize_guard(memory_map_->resize_lock(), std::defer_lock);
+  std::lock(write_guard, resize_guard);
+  if (memory_map_.use_count() > 1) {
+    return Status::IOError("Cannot resize memory map while there are active readers");
+  }
+  RETURN_NOT_OK(memory_map_->Resize(new_size));
   return Status::OK();
 }
 
