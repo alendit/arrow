@@ -198,9 +198,7 @@ class ARROW_EXPORT MemoryMappedFile : public ReadWriteFileInterface {
   // Zero copy read, moves position pointer. Not thread-safe
   Status Read(int64_t nbytes, std::shared_ptr<Buffer>* out) override;
 
-  // Raw copy of the memory at specified position
-  // Threadsafe, but locks the complete file for readers and writers,
-  // so the other ReatAt method is preferable
+  // Raw copy of the memory at specified position, not threadsafe
   Status ReadAt(int64_t position, int64_t nbytes, int64_t* bytes_read,
                 void* out) override;
 

@@ -550,10 +550,7 @@ Status MemoryMappedFile::ReadAt(int64_t position, int64_t nbytes,
 
 Status MemoryMappedFile::ReadAt(int64_t position, int64_t nbytes, int64_t* bytes_read,
                                 void* out) {
-  // unlike in previous, we acquire the write lock too
-  std::unique_lock<std::mutex> write_guard(memory_map_->lock(), std::defer_lock);
-  std::unique_lock<std::mutex> resize_guard(memory_map_->resize_lock(), std::defer_lock);
-  std::lock(write_guard, resize_guard);
+  std::unique_lock<std::mutex> resize_guard(memory_map_->resize_lock());
   nbytes = std::max<int64_t>(0, std::min(nbytes, memory_map_->size() - position));
   if (nbytes > 0) {
     std::memcpy(out, memory_map_->data() + position, static_cast<size_t>(nbytes));
