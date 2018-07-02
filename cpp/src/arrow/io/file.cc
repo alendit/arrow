@@ -469,7 +469,7 @@ class MemoryMappedFile::MemoryMap : public ResizableBuffer {
   // Initialize the mmap and set capacity, size and the data pointers
   Status InitMMap(int64_t initial_size, bool resize_file = false) {
     if (resize_file) {
-      internal::FileTruncate(file_->fd(), initial_size);
+      RETURN_NOT_OK(internal::FileTruncate(file_->fd(), initial_size));
     }
     DCHECK(data_ == nullptr && mutable_data_ == nullptr);
     void* result = mmap(nullptr, static_cast<size_t>(initial_size), prot_flags_,
