@@ -353,7 +353,7 @@ class MemoryMappedFile::MemoryMap : public ResizableBuffer {
   ~MemoryMap() {
     if (file_->is_open()) {
       if (mutable_data_ != nullptr) {
-        DCHECK_EQ(munmap(mutable_data_, static_cast<size_t>(capacity_)), 0);
+        DCHECK_EQ(munmap(mutable_data_, static_cast<size_t>(size_)), 0);
       }
       DCHECK(file_->Close().ok());
     }
