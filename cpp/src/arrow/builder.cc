@@ -329,17 +329,10 @@ Status PrimitiveBuilder<T>::Append(const std::vector<value_type>& values) {
 template <typename T>
 Status PrimitiveBuilder<T>::FinishInternal(std::shared_ptr<ArrayData>* out) {
   const int64_t bytes_required = TypeTraits<T>::bytes_required(length_);
-  if (data_) {
-    if (bytes_required > 0 && bytes_required < data_->size()) {
-      // Trim buffers
-      RETURN_NOT_OK(data_->Resize(bytes_required));
-    }
-    // zero the padding
-    memset(data_->mutable_data() + bytes_required, 0, data_->capacity() - bytes_required);
-  } else {
-    DCHECK_EQ(bytes_required, 0);
+  if (bytes_required > 0 && bytes_required < data_->size()) {
+    // Trim buffers
+    RETURN_NOT_OK(data_->Resize(bytes_required));
   }
-
   *out = ArrayData::Make(type_, length_, {null_bitmap_, data_}, null_count_);
 
   data_ = null_bitmap_ = nullptr;
@@ -399,15 +392,9 @@ AdaptiveIntBuilder::AdaptiveIntBuilder(MemoryPool* pool) : AdaptiveIntBuilderBas
 
 Status AdaptiveIntBuilder::FinishInternal(std::shared_ptr<ArrayData>* out) {
   const int64_t bytes_required = length_ * int_size_;
-  if (data_) {
-    if (bytes_required > 0 && bytes_required < data_->size()) {
-      // Trim buffers
-      RETURN_NOT_OK(data_->Resize(bytes_required));
-    }
-    // zero the padding
-    memset(data_->mutable_data() + bytes_required, 0, data_->capacity() - bytes_required);
-  } else {
-    DCHECK_EQ(bytes_required, 0);
+  if (bytes_required > 0 && bytes_required < data_->size()) {
+    // Trim buffers
+    RETURN_NOT_OK(data_->Resize(bytes_required));
   }
 
   std::shared_ptr<DataType> output_type;
@@ -567,17 +554,10 @@ AdaptiveUIntBuilder::AdaptiveUIntBuilder(MemoryPool* pool)
 
 Status AdaptiveUIntBuilder::FinishInternal(std::shared_ptr<ArrayData>* out) {
   const int64_t bytes_required = length_ * int_size_;
-  if (data_) {
-    if (bytes_required > 0 && bytes_required < data_->size()) {
-      // Trim buffers
-      RETURN_NOT_OK(data_->Resize(bytes_required));
-    }
-    // zero the padding
-    memset(data_->mutable_data() + bytes_required, 0, data_->capacity() - bytes_required);
-  } else {
-    DCHECK_EQ(bytes_required, 0);
+  if (bytes_required > 0 && bytes_required < data_->size()) {
+    // Trim buffers
+    RETURN_NOT_OK(data_->Resize(bytes_required));
   }
-
   std::shared_ptr<DataType> output_type;
   switch (int_size_) {
     case 1:
@@ -773,15 +753,9 @@ Status BooleanBuilder::Resize(int64_t capacity) {
 
 Status BooleanBuilder::FinishInternal(std::shared_ptr<ArrayData>* out) {
   const int64_t bytes_required = BitUtil::BytesForBits(length_);
-  if (data_) {
-    if (bytes_required > 0 && bytes_required < data_->size()) {
-      // Trim buffers
-      RETURN_NOT_OK(data_->Resize(bytes_required));
-    }
-    // zero the padding
-    memset(data_->mutable_data() + bytes_required, 0, data_->capacity() - bytes_required);
-  } else {
-    DCHECK_EQ(bytes_required, 0);
+  if (bytes_required > 0 && bytes_required < data_->size()) {
+    // Trim buffers
+    RETURN_NOT_OK(data_->Resize(bytes_required));
   }
 
   int64_t bit_offset = length_ % 8;
@@ -789,6 +763,7 @@ Status BooleanBuilder::FinishInternal(std::shared_ptr<ArrayData>* out) {
     // Adjust last byte
     data_->mutable_data()[length_ / 8] &= BitUtil::kPrecedingBitmask[bit_offset];
   }
+
   *out = ArrayData::Make(boolean(), length_, {null_bitmap_, data_}, null_count_);
 
   data_ = null_bitmap_ = nullptr;

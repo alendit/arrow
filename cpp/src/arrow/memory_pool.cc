@@ -53,9 +53,10 @@ Status AllocateAligned(int64_t size, uint8_t** out) {
     ss << "malloc of size " << size << " failed";
     return Status::OutOfMemory(ss.str());
   }
+  memset(*out, 0, size);
 #elif defined(ARROW_JEMALLOC)
   *out = reinterpret_cast<uint8_t*>(mallocx(
-      std::max(static_cast<size_t>(size), kAlignment), MALLOCX_ALIGN(kAlignment)));
+      std::max(static_cast<size_t>(size), kAlignment), MALLOCX_ALIGN(kAlignment) | MALLOCX_ZERO));
   if (*out == NULL) {
     std::stringstream ss;
     ss << "malloc of size " << size << " failed";
@@ -75,6 +76,7 @@ Status AllocateAligned(int64_t size, uint8_t** out) {
     ss << "invalid alignment parameter: " << kAlignment;
     return Status::Invalid(ss.str());
   }
+  memset(*out, 0, size);
 #endif
   return Status::OK();
 }
@@ -108,7 +110,7 @@ class DefaultMemoryPool : public MemoryPool {
   Status Reallocate(int64_t old_size, int64_t new_size, uint8_t** ptr) override {
 #ifdef ARROW_JEMALLOC
     uint8_t* previous_ptr = *ptr;
-    *ptr = reinterpret_cast<uint8_t*>(rallocx(*ptr, new_size, MALLOCX_ALIGN(kAlignment)));
+    *ptr = reinterpret_cast<uint8_t*>(rallocx(*ptr, new_size, MALLOCX_ALIGN(kAlignment) | MALLOCX_ZERO));
     if (*ptr == NULL) {
       std::stringstream ss;
       ss << "realloc of size " << new_size << " failed";
@@ -124,6 +126,9 @@ class DefaultMemoryPool : public MemoryPool {
     DCHECK(out);
     // Copy contents and release old memory chunk
     memcpy(out, *ptr, static_cast<size_t>(std::min(new_size, old_size)));
+    if (new_size > old_size) {
+      memset(out + old_size, 0, static_cast<size_t>(new_size - old_size));
+    }
 #ifdef _MSC_VER
     _aligned_free(*ptr);
 #else
